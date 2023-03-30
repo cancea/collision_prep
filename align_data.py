@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-
-
+import random
+import math
 
 REQUIRED_COLUMNS = [
     'Year', 'Geography', 'Collision Severity',
@@ -13,19 +13,42 @@ REQUIRED_COLUMNS = [
     'Number of People: Injury - Major', 'Number of People: Fatality',
     ]
 
+numeric_columns = [n for n in REQUIRED_COLUMNS if n.startswith('Number')]
+index_columns = [n for n in REQUIRED_COLUMNS if not n.startswith('Number')]
+
+
+def rand_round(x):
+    """  Randomly round up or down to the nearest integer based on distance from the nearest integer.
+
+         This is useful when large sets of numbers may be rounded down, but the total should be maintained.
+         For example, 0.1 will return 0 for 9 out of 10 call and 1 for the remaining one (on average).
+    """
+    #return round(x)
+    f = math.floor(x)
+    r = x - f
+    return f+1 if random.random() < r else f
+
+
+
 def check_summary(summary):
     # Perform some cross checks
-    check_fatalities = summary[(summary['Collision Severity'] == 'Fatality') & (summary['Number of People: Fatality'] == 0)]
-    check_non_fatalities = summary[(summary['Collision Severity'] != 'Fatality') & (summary['Number of People: Fatality'] != 0)]
+    check_fatalities = summary[(summary['Collision Severity'] == 'Fatality')
+                               & (summary['Number of People: Fatality'] == 0)
+                               & (summary['Number of Collisions'] > 0) ]
+    check_non_fatalities = summary[(summary['Collision Severity'] != 'Fatality')
+                                   & (summary['Number of People: Fatality'] != 0)]
     check_pdo = summary[(summary['Collision Severity'] == 'Property Damage Only')
                         & ((summary['Number of People: Fatality'] != 0)
                            |(summary['Number of People: Injury - Minimal'] != 0)
                            |(summary['Number of People: Injury - Minor'] != 0)
                            |(summary['Number of People: Injury - Major'] != 0))]
+
+
     if len(check_fatalities):
-        print(check_fatalities)
+        print(check_fatalities[['Geography', 'Collision Severity', 'Number of Collisions', 'Number of Vehicles: Demolished', 'Number of People: Fatality']])
     if len(check_non_fatalities):
         print(check_non_fatalities)
+
     assert len(check_fatalities) == 0, ['Fatal collision, but no person with fatality']
     assert len(check_non_fatalities) == 0, ['Non-Fatal collision, but person with fatality']
     assert len(check_pdo) == 0, ['PDO collision, but person with injury or fatality']
@@ -40,7 +63,7 @@ def parse_ontario_data(args):
                  },
         'D15': {'name': 'Speed',
                 'default':  False,
-                'groups': {True: ['03', '04']}
+                'groups': {True: ['3', '4']}
                 },
         'D16': {'name': 'Impaired',
                 'default': False,
@@ -66,8 +89,18 @@ def parse_ontario_data(args):
         }
 
 
-    df = pd.read_csv(args.ontario, low_memory=False)
+    df_injury = pd.read_csv(args.ontario_injury, low_memory=False, dtype={'B13': str, 'I07': str})
+    # remove the extraneous PDO collisions and no-injury people from the injury dataset
+    df_injury = df_injury[df_injury['B13'].isin(['1', '2']) & df_injury['I07'].isin(['1', '2', '3', '4'])]
+    df_collisions = pd.read_csv(args.ontario_collisions, low_memory=False)
+    common = ['B02', 'D07']
+    print('common:', common)
 
+    injury_cols = common + [c for c in df_injury.columns if c.startswith('I')]
+
+    df = df_collisions.merge(df_injury[injury_cols], on=common, how='left')
+    print("# records:", len(df))
+    #raise "stop"
     # Rename the key columns
     for v in variables:
         df[v] = df[v].apply(str)
@@ -90,8 +123,6 @@ def parse_ontario_data(args):
     collision_count['Number of Collisions'] = 1
     collision_count = collision_count[key_columns + ['Number of Collisions']].groupby(key_columns).sum()
     print("  # of collisions:", collision_count['Number of Collisions'].sum())
-
-
     # Extract the number of vehicles
     counts = {
         'Number of Vehicles: None': ('D48', ['0', '1']),
@@ -135,14 +166,17 @@ def parse_ontario_data(args):
     people_count = people_count[key_columns + list(counts.keys())].groupby(key_columns).sum()
     print("  # of people    :", people_count.sum().sum())
 
-    summary = collision_count.merge(vehicle_count, left_index=True, right_index=True)
-    summary = summary.merge(people_count, left_index=True, right_index=True)
+    summary = collision_count.merge(vehicle_count, left_index=True, right_index=True, how='left')
+    summary = summary.merge(people_count, left_index=True, right_index=True, how='left')
+    for n in numeric_columns:
+        summary[n] = summary[n].fillna(0)
 
     if args.year:
         summary['Year'] = args.year
     summary['Geography'] = 'Ontario'
     summary = summary.reset_index()[REQUIRED_COLUMNS]
     print("  # of fatalities:", summary['Number of People: Fatality'].sum())
+
     check_summary(summary)
     return summary
 
@@ -188,7 +222,7 @@ def parse_national_data(args, ontario):
 
 
     # The national dataset does not distinguish between some causes, include property damage only
-    # collisions, or levels of vehicle damage
+    # collisions, levels of vehicle damage, or severity of injury
     # The Ontario data is used as a proxy for these factors.
 
     # Extract the number of collisions
@@ -261,8 +295,6 @@ def parse_national_data(args, ontario):
     summary = summary.reset_index()
     check_summary(summary)
 
-    numeric_columns = [n for n in REQUIRED_COLUMNS if n.startswith('Number')]
-    index_columns = [n for n in REQUIRED_COLUMNS if not n.startswith('Number')]
 
     # Split the collisions by contributing factor based on Ontario result
     split_data    = ontario.drop(["Geography", "Year"], axis=1)
@@ -366,10 +398,15 @@ def parse_national_data(args, ontario):
     provinces.extend( known_provinces.values() )
 
     summary = pd.concat(provinces, ignore_index=True, sort=True)
+    print("ALL COLUMNS:", list(summary.columns))
+    print("REQUIRED:", REQUIRED_COLUMNS)
+    print("OTHER: ", set(summary.columns) - set(REQUIRED_COLUMNS))
 
     summary = summary.reset_index()[REQUIRED_COLUMNS]
+    has_collision = summary['Number of Collisions'].apply(lambda x: 1 if x > 0 else 0)
+    # Tidy up any minor inconsistencies that have arising due to fractional counts
     for n in numeric_columns:
-        summary[n] = np.round(summary[n])
+        summary[n] = summary[n].apply(rand_round)*has_collision
     print("Checking after geography...")
     print("  # of records:", len(summary))
     print("  # of collisions:", summary['Number of Collisions'].sum())
@@ -378,27 +415,41 @@ def parse_national_data(args, ontario):
     print("  # of fatalities:", summary['Number of People: Fatality'].sum())
 
     # after rounding, it is possible that there could be some minor inconsistencies.
-    # We simply clean those up to ensure the dataset is consistent
-    def adjust_severity(r):
-        if r[0] > 0:
-            return 'Fatality'
-        if sum(r) > 0:
-            return 'Injury'
-        return 'Property Damage Only'
+    # We clean those up to ensure the dataset is consistent
+
+
+    def adjust_fatality(r):
+        if r[0] != 'Fatality':
+            return 0
+        if r[0] == 'Fatality' and r[1] == 0:
+            return 0
+        return max(r[2], 1)
+
 
     def adjust_multivehicle(r):
-        return sum(r) > 1
+        if r[0]:
+            return r[1]
+        return sum(r[2:])
 
-    summary['Collision Severity'] = summary[['Number of People: Fatality',
-                                             'Number of People: Injury - Minimal',
-                                             'Number of People: Injury - Minor',
-                                             'Number of People: Injury - Major'] ].apply(adjust_severity, axis=1)
-    summary['Multi-Vehicle'] = summary[[ 'Number of Vehicles: None',
-                                         'Number of Vehicles: Light',
-                                         'Number of Vehicles: Moderate',
-                                         'Number of Vehicles: Severe',
-                                         'Number of Vehicles: Demolished']].apply(adjust_multivehicle, axis=1)
 
+    summary['Number of Collisions'] = summary[['Multi-Vehicle',
+                                               'Number of Collisions',
+                                               'Number of Vehicles: None',
+                                               'Number of Vehicles: Light',
+                                               'Number of Vehicles: Moderate',
+                                               'Number of Vehicles: Severe',
+                                               'Number of Vehicles: Demolished']].apply(adjust_multivehicle, axis=1)
+
+
+    summary['Number of People: Fatality'] = summary[['Collision Severity', 'Number of Collisions', 'Number of People: Fatality']].apply(adjust_fatality, axis=1)
+
+
+    print("Checking cleanup...")
+    print("  # of records:", len(summary))
+    print("  # of collisions:", summary['Number of Collisions'].sum())
+    print("  # of vehicles:", sum(summary[x].sum() for x in REQUIRED_COLUMNS if x.startswith('Number of Vehicles')))
+    print("  # of people:", sum(summary[x].sum() for x in REQUIRED_COLUMNS if x.startswith('Number of People')))
+    print("  # of fatalities:", summary['Number of People: Fatality'].sum())
 
     check_summary(summary)
     return summary
@@ -411,14 +462,15 @@ if __name__ == '__main__':
                     description = 'Aligns provincial collision data to standard social cost of collision model format. See the README for more details.',
                     )
     parser.add_argument("-y", "--year", required=True)
-    parser.add_argument("--ontario", required=True, help="Ontario collision statistics from MTO, in CSV format")
+    parser.add_argument("--ontario-collisions", required=True, help="Ontario collision-level statistics from MTO, in CSV format")
+    parser.add_argument("--ontario-injury", required=True, help="Ontario injury-level statistics from MTO, in CSV format")
     parser.add_argument("--national", required=True, help="National collision statistics from Transport Canada, in CSV format")
     parser.add_argument("--casualty", required=True, help="Provincial fatality and injury rates from Transport Canada, in CSV format")
 
     args = parser.parse_args()
 
     ontario = parse_ontario_data(args)
-
+    ontario.to_csv('ontario_summary.csv', index=False)
     national = parse_national_data(args, ontario)
 
     output = "collision_summary_{}.csv".format(args.year)
