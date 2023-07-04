@@ -5,14 +5,13 @@ import math
 
 REQUIRED_COLUMNS = [
     'Year', 'Geography', 'Collision Severity',
-    'Heavy Vehicle', 'Speed', 'Impaired', 'Highway',  'Pedestrian', 'Multi-Vehicle',
+    'Large Truck', 'Speed', 'Impaired', 'Highway',  'Pedestrian', 'Multi-Vehicle',
     'Number of Collisions',
     'Number of Vehicles: None', 'Number of Vehicles: Light', 'Number of Vehicles: Moderate',
     'Number of Vehicles: Severe', 'Number of Vehicles: Demolished',
     'Number of People: No Injury', 'Number of People: Injury - Minimal', 'Number of People: Injury - Minor',
     'Number of People: Injury - Major', 'Number of People: Fatality',
     ]
-
 numeric_columns = [n for n in REQUIRED_COLUMNS if n.startswith('Number')]
 index_columns = [n for n in REQUIRED_COLUMNS if not n.startswith('Number')]
 
@@ -57,8 +56,8 @@ def check_summary(summary):
 def parse_ontario_data(args):
     print("Parsing Ontario data...")
     variables = {
-        'D29': {'name': 'Heavy Vehicle',
-                'groups': {True: [f'{x:02d}' for x in range(7, 21)] + ['98'] },
+        'D29': {'name': 'Large Truck',
+                'groups': {True: [f'{x:02d}' for x in range(7, 14)] + [ '98'] },
                 'default': False
                  },
         'D15': {'name': 'Speed',
@@ -67,7 +66,7 @@ def parse_ontario_data(args):
                 },
         'D16': {'name': 'Impaired',
                 'default': False,
-                'groups': {True: ['3', '4', '5']}
+                'groups': {True: ['2', '3', '4', '5']}
                 },
         'B12': {'name': 'Highway',
                 'default': False,
@@ -78,9 +77,9 @@ def parse_ontario_data(args):
                 'groups': {'Fatality': ['1'],
                            'Injury': ['2']}
                 },
-         'I11': {'name': 'Pedestrian',
+         'I06': {'name': 'Pedestrian',
                 'default': False,
-                'groups': {True: [str(x) for x in range(0,10)]}
+                'groups': {True: ['9']}
                 },
          'B09': {'name': 'Multi-Vehicle',
                 'default': True,
@@ -185,7 +184,7 @@ def parse_national_data(args, ontario):
     """ Parse the national collision dataset, using Ontario data as a proxy to fill in missing data"""
     print("Parsing national data...")
     variables = {
-        'V_TYPE': {'name': 'Heavy Vehicle',
+        'V_TYPE': {'name': 'Large Truck',
                    'groups': {True:  ['7', '07', '8', '08', '9', '09', '21']},
                    'default': False
                  },
@@ -444,7 +443,7 @@ def parse_national_data(args, ontario):
     summary['Number of People: Fatality'] = summary[['Collision Severity', 'Number of Collisions', 'Number of People: Fatality']].apply(adjust_fatality, axis=1)
 
 
-    print("Checking cleanup...")
+    print("Checking results...")
     print("  # of records:", len(summary))
     print("  # of collisions:", summary['Number of Collisions'].sum())
     print("  # of vehicles:", sum(summary[x].sum() for x in REQUIRED_COLUMNS if x.startswith('Number of Vehicles')))
